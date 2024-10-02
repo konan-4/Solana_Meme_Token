@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token::{Mint, Token, TokenAccount},
+    token::{Mint, Token, TokenAccount, Transfer},
 };
 
 declare_id!("6oMv3v3uUWGM4NwgHFdgLQXACh9jzyrkKBhJvdF31EzL");
@@ -31,8 +31,28 @@ pub mod simplified_meme_token {
             ),
             amount,
         )?;
-
         msg!("Minted {} tokens to the token account.", amount);
+        Ok(())
+    }
+
+    pub fn transfer_tokens(ctx: Context<TransferTokens>, amount: u64) -> Result<()> {
+        anchor_spl::token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.from.to_account_info(),
+                    to: ctx.accounts.to.to_account_info(),
+                    authority: ctx.accounts.authority.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+        msg!(
+            "Transferred {} tokens from {} to {}.",
+            amount,
+            ctx.accounts.from.key(),
+            ctx.accounts.to.key()
+        );
         Ok(())
     }
 }
@@ -83,4 +103,15 @@ pub struct MintTokens<'info> {
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct TransferTokens<'info> {
+    pub mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub from: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub to: Account<'info, TokenAccount>,
+    pub authority: Signer<'info>,
+    pub token_program: Program<'info, Token>,
 }
