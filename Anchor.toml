@@ -6,6 +6,7 @@ skip-lint = false
 
 [programs.localnet]
 meme_token = "6oMv3v3uUWGM4NwgHFdgLQXACh9jzyrkKBhJvdF31EzL"
+fair_launch = "4Nd1mZSR4cFVfZ2txTPcm97hYkBaPzds6h2SB1ShbFt1"
 
 [registry]
 url = "https://api.apr.dev"
