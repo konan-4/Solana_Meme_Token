@@ -1,3 +1,6 @@
+mod cpamm;
+use crate::cpamm::amm_cpi;
+use crate::cpamm::ProxyInitialize;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::native_token::LAMPORTS_PER_SOL;
 use anchor_lang::solana_program::program::invoke;
@@ -7,7 +10,7 @@ use std::mem::size_of;
 declare_id!("4Nd1mZSR4cFVfZ2txTPcm97hYkBaPzds6h2SB1ShbFt1");
 
 #[program]
-pub mod fair_launch {
+mod fair_launch {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>, params: FairLaunchParams) -> Result<()> {
@@ -22,6 +25,7 @@ pub mod fair_launch {
         fair_launch.refund_fee_rate = params.refund_fee_rate;
         fair_launch.started = false;
         fair_launch.total_sol = 0;
+        fair_launch.raydium_initialized = false;
 
         // Initialize the token mint
         let cpi_context = CpiContext::new(
@@ -31,7 +35,7 @@ pub mod fair_launch {
                 rent: ctx.accounts.rent.to_account_info(),
             },
         );
-        token::initialize_mint(cpi_context, 9, fair_launch.key(), Some(fair_launch.key()))?;
+        token::initialize_mint(cpi_context, 9, &fair_launch.key(), Some(&fair_launch.key()))?;
 
         // Mint total supply to the fair launch account
         let cpi_context = CpiContext::new(
@@ -51,8 +55,8 @@ pub mod fair_launch {
         fair_launch.refund_fee_to = ctx.accounts.refund_fee_to.key();
         fair_launch.project_owner = ctx.accounts.project_owner.key();
 
-        // Initialize Raydium pool (placeholder - actual implementation will depend on Raydium's interface)
-        // This is where you would interact with Raydium to create the initial liquidity pool
+        // Store Raydium parameters for later use
+        fair_launch.raydium_params = params.raydium_params;
 
         Ok(())
     }
@@ -158,6 +162,7 @@ pub mod fair_launch {
 
         Ok(())
     }
+
     pub fn start_trading(ctx: Context<StartTrading>) -> Result<()> {
         let fair_launch = &mut ctx.accounts.fair_launch;
         let clock = Clock::get()?;
@@ -172,7 +177,7 @@ pub mod fair_launch {
         // Mark as started
         fair_launch.started = true;
 
-        // Calculate fees
+        // Calculate fees and amounts
         let total_sol = fair_launch.total_sol;
         let fee = (total_sol * LAUNCH_FEE_RATE) / 10000;
         let left = total_sol - fee;
@@ -183,14 +188,44 @@ pub mod fair_launch {
             left
         };
 
-        // Transfer SOL to Raydium pool (placeholder - actual implementation will depend on Raydium's interface)
-        // This is where you would interact with Raydium to create the liquidity pool
-        // For now, we'll just transfer the SOL to a designated pool account
+        // Initialize Raydium pool
+        let cpi_program = ctx.accounts.raydium_program.to_account_info();
+
+        let cpi_accounts = ProxyInitialize {
+            fair_launch: ctx.accounts.fair_launch.clone(), // Account for the fair launch program
+            fair_launch_token_account: ctx.accounts.fair_launch_token_account.clone(), // Token account for the fair launch
+            amm_open_orders: ctx.accounts.amm_open_orders.clone(), // Open orders account for the AMM
+            raydium_pool: ctx.accounts.raydium_pool.clone(),       // Raydium pool account
+            raydium_pool_token_account: ctx.accounts.raydium_pool_token_account.clone(), // Token account for the Raydium pool
+            amm_id: ctx.accounts.amm_id.clone(), // AMM ID for the Raydium program
+            amm_authority: ctx.accounts.amm_authority.clone(), // AMM authority
+            lp_mint: ctx.accounts.lp_mint.clone(), // LP token mint account
+            coin_mint: ctx.accounts.coin_mint.clone(), // Coin mint account
+            pc_mint: ctx.accounts.pc_mint.clone(), // PC mint account
+            coin_vault: ctx.accounts.coin_vault.clone(), // Coin vault account
+            pc_vault: ctx.accounts.pc_vault.clone(), // PC vault account
+            amm_target_orders: ctx.accounts.amm_target_orders.clone(), // Target orders for AMM
+            pool_withdraw_queue: ctx.accounts.pool_withdraw_queue.clone(), // Withdraw queue for the pool
+            rent: ctx.accounts.rent.clone(),                               // Rent sysvar account
+        };
+
+        let cpi_ctx = Context::new(cpi_program, cpi_accounts);
+        amm_cpi::proxy_initialize(
+            cpi_ctx,
+            fair_launch.raydium_params.nonce,
+            fair_launch.raydium_params.open_time,
+            fair_launch.raydium_params.init_pc_amount,
+            fair_launch.raydium_params.init_coin_amount,
+        )?;
+
+        fair_launch.raydium_initialized = true;
+
+        // Transfer SOL to Raydium pool
         let cpi_context = CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
             anchor_lang::system_program::Transfer {
                 from: fair_launch.to_account_info(),
-                to: ctx.accounts.raydium_pool.to_account_info(),
+                to: ctx.accounts.pc_vault.to_account_info(),
             },
         );
         anchor_lang::system_program::transfer(cpi_context, total_add)?;
@@ -200,7 +235,7 @@ pub mod fair_launch {
             ctx.accounts.token_program.to_account_info(),
             Transfer {
                 from: ctx.accounts.fair_launch_token_account.to_account_info(),
-                to: ctx.accounts.raydium_pool_token_account.to_account_info(),
+                to: ctx.accounts.coin_vault.to_account_info(),
                 authority: fair_launch.to_account_info(),
             },
         );
@@ -264,7 +299,7 @@ pub mod fair_launch {
         require!(mint_amount > 0, FairLaunchError::ZeroMintAmount);
 
         // Call external minting program
-        let mint_ix = ctx.accounts.meme_program.instruction();
+        let mint_ix = ctx.accounts.meme_program.mint_instruction();
         let account_metas = vec![
             AccountMeta::new(ctx.accounts.token_mint.key(), false),
             AccountMeta::new(ctx.accounts.user_token_account.key(), false),
@@ -359,6 +394,15 @@ pub struct FairLaunchParams {
     pub after_slot: u64,
     pub soft_top_cap: u64,
     pub refund_fee_rate: u16,
+    pub raydium_params: RaydiumParams,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct RaydiumParams {
+    pub nonce: u8,
+    pub open_time: u64,
+    pub init_pc_amount: u64,
+    pub init_coin_amount: u64,
 }
 
 #[derive(Accounts)]
@@ -401,6 +445,24 @@ pub struct Initialize<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+pub struct StartTrading<'info> {
+    pub fair_launch: Account<'info, FairLaunch>, // FairLaunch account
+    pub fair_launch_token_account: Account<'info, TokenAccount>, // Token account for the fair launch
+    pub raydium_pool: AccountInfo<'info>,                        // Raydium pool account
+    pub raydium_pool_token_account: Account<'info, TokenAccount>, // Token account for the Raydium pool
+    pub amm_open_orders: Account<'info, OpenOrders>,              // Open orders account for the AMM
+    pub amm_id: AccountInfo<'info>,                               // AMM ID for the Raydium program
+    pub amm_authority: AccountInfo<'info>,                        // AMM authority
+    pub lp_mint: Account<'info, Mint>,                            // LP token mint account
+    pub coin_mint: Account<'info, Mint>,                          // Coin mint account
+    pub pc_mint: Account<'info, Mint>,                            // PC mint account
+    pub coin_vault: Account<'info, TokenAccount>,                 // Coin vault account
+    pub pc_vault: Account<'info, TokenAccount>,                   // PC vault account
+    pub amm_target_orders: Account<'info, OpenOrders>,            // Target orders for AMM
+    pub pool_withdraw_queue: AccountInfo<'info>,                  // Withdraw queue for the pool
+    pub rent: Sysvar<'info, Rent>,                                // Rent sysvar account
+                                                                  // Include any additional accounts that may be needed
+}
 #[account]
 pub struct FairLaunch {
     pub authority: Pubkey,
@@ -418,6 +480,8 @@ pub struct FairLaunch {
     pub fund_balance_of: std::collections::HashMap<Pubkey, u64>,
     pub minted: std::collections::HashSet<Pubkey>, // Add other necessary fields
     pub claimed: std::collections::HashSet<Pubkey>,
+    pub raydium_params: RaydiumParams,
+    pub raydium_initialized: bool,
 }
 #[error_code]
 pub enum FairLaunchError {
@@ -441,6 +505,8 @@ pub enum FairLaunchError {
     NoExtraSOLToClaim,
     #[msg("Claim amount is zero")]
     ZeroClaimAmount,
+    #[msg("Raydium initialization failed")]
+    RaydiumInitializationFailed,
 }
 
 #[event]
@@ -449,7 +515,13 @@ pub struct FundEvent {
     pub amount: u64,
     pub timestamp: i64,
 }
-
+#[event]
+pub struct TradingStartedEvent {
+    pub total_sol: u64,
+    pub total_add: u64,
+    pub fee: u64,
+    pub timestamp: i64,
+}
 #[event]
 pub struct RefundEvent {
     pub user: Pubkey,
@@ -457,28 +529,6 @@ pub struct RefundEvent {
     pub fee: u64,
     pub timestamp: i64,
 }
-
-#[derive(Accounts)]
-pub struct StartTrading<'info> {
-    #[account(mut)]
-    pub fair_launch: Account<'info, FairLaunch>,
-    #[account(mut)]
-    pub fair_launch_token_account: Account<'info, TokenAccount>,
-    /// CHECK: This account is not dangerous as we only transfer SOL to it
-    #[account(mut)]
-    pub raydium_pool: AccountInfo<'info>,
-    #[account(mut)]
-    pub raydium_pool_token_account: Account<'info, TokenAccount>,
-    /// CHECK: This account is not dangerous as we only transfer SOL to it
-    #[account(mut)]
-    pub refund_fee_to: AccountInfo<'info>,
-    /// CHECK: This account is not dangerous as we only transfer SOL to it
-    #[account(mut)]
-    pub project_owner: AccountInfo<'info>,
-    pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, System>,
-}
-
 #[derive(Accounts)]
 pub struct MintToken<'info> {
     #[account(mut)]
@@ -494,19 +544,25 @@ pub struct MintToken<'info> {
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
-#[event]
-pub struct TradingStartedEvent {
-    pub total_sol: u64,
-    pub total_add: u64,
-    pub fee: u64,
-    pub timestamp: i64,
+#[derive(Accounts)]
+pub struct Fund<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(mut)]
+    pub fair_launch: Account<'info, FairLaunch>,
+    pub system_program: Program<'info, System>,
 }
 
-#[event]
-pub struct TokenMintedEvent {
-    pub user: Pubkey,
-    pub amount: u64,
-    pub timestamp: i64,
+#[derive(Accounts)]
+pub struct Refund<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(mut)]
+    pub fair_launch: Account<'info, FairLaunch>,
+    /// CHECK: This account is not dangerous as we only transfer SOL to it
+    #[account(mut)]
+    pub refund_fee_to: AccountInfo<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -519,6 +575,13 @@ pub struct ClaimExtraSol<'info> {
 }
 #[event]
 pub struct ExtraSOLClaimedEvent {
+    pub user: Pubkey,
+    pub amount: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct TokenMintedEvent {
     pub user: Pubkey,
     pub amount: u64,
     pub timestamp: i64,
