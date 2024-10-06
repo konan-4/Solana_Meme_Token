@@ -5,8 +5,8 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-meme_token = "6oMv3v3uUWGM4NwgHFdgLQXACh9jzyrkKBhJvdF31EzL"
-fair_launch = "4Nd1mZSR4cFVfZ2txTPcm97hYkBaPzds6h2SB1ShbFt1"
+fair_launch_dex = "Boed7wGmYbwngxJtPdRNZszZdeg778GdpExrjy5rsdZu"
+meme_token = "23LyvPH8FiDapwARhYs39d2qtkNpYyeRycRndbxPXYVz"
 
 [registry]
 url = "https://api.apr.dev"

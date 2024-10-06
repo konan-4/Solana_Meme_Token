@@ -4,7 +4,7 @@ use anchor_spl::{
     token::{Mint, Token, TokenAccount, Transfer},
 };
 
-declare_id!("6oMv3v3uUWGM4NwgHFdgLQXACh9jzyrkKBhJvdF31EzL");
+declare_id!("23LyvPH8FiDapwARhYs39d2qtkNpYyeRycRndbxPXYVz");
 
 #[program]
 pub mod simplified_meme_token {
