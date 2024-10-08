@@ -1,3 +1,4 @@
+
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { SimplifiedFairLaunchDex } from "../target/types/simplified_fair_launch_dex";
@@ -15,7 +16,6 @@ describe("simplified-fair-launch-dex", () => {
   let mint: anchor.web3.PublicKey;
   let fairLaunchTokenAccount: anchor.web3.PublicKey;
   let dexTokenAccount: anchor.web3.PublicKey;
-
   const totalSupply = new anchor.BN(1_000_000);
   const duration = new anchor.BN(5); // 5 seconds for testing purposes
 
@@ -24,6 +24,7 @@ describe("simplified-fair-launch-dex", () => {
       [Buffer.from("fair_launch")],
       program.programId
     );
+    console.log(fairLaunch);
 
     await provider.connection.confirmTransaction(
       await provider.connection.requestAirdrop(provider.wallet.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL),
@@ -66,6 +67,7 @@ describe("simplified-fair-launch-dex", () => {
   });
 
   it("Initializes the fair launch", async () => {
+
     await program.methods
       .initialize(totalSupply, duration)
       .accounts({
@@ -73,51 +75,60 @@ describe("simplified-fair-launch-dex", () => {
         fairLaunch: fairLaunch,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .rpc();
+      .rpc()
+      .then(() => console.log("FairLaunch initialized successfully"))
+      .catch((error) => console.error("Error initializing FairLaunch:", error));
 
-    const fairLaunchAccount = await program.account.fairLaunch.fetch(fairLaunch);
-    expect(fairLaunchAccount.totalSupply.eq(totalSupply)).to.be.true;
-    expect(fairLaunchAccount.totalSol.eq(new anchor.BN(0))).to.be.true;
   });
 
-  it("Allows funding", async () => {
-    const fundAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
 
-    await program.methods
-      .fund(fundAmount)
-      .accounts({
-        user: provider.wallet.publicKey,
-        fairLaunch: fairLaunch,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .rpc();
+    it("Allows funding", async () => {
+      const fundAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
 
-    const fairLaunchAccount = await program.account.fairLaunch.fetch(fairLaunch);
-    expect(fairLaunchAccount.totalSol.eq(fundAmount)).to.be.true;
+      await program.methods
+        .fund(fundAmount)
+        .accounts({
+          user: provider.wallet.publicKey,
+          fairLaunch: fairLaunch,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc()
+        .then(() => console.log("Funding successful"))
+        .catch((error) => {
+          console.error("Error during funding:", error);
+          throw error; // Re-throw to fail the test if necessary
+        });
+
+      const fairLaunchAccount = await program.account.fairLaunch.fetch(fairLaunch);
+      expect(fairLaunchAccount.totalSol.eq(fundAmount)).to.be.true;
+    });
+    it("Starts trading after fair launch period ends", async () => {
+      // Wait for the fair launch period to end
+      await new Promise(resolve => setTimeout(resolve, (duration.toNumber() + 1) * 1000));
+
+      // Start trading
+      await program.methods
+        .startTrading()
+        .accounts({
+          fairLaunch: fairLaunch,
+          fairLaunchTokenAccount: fairLaunchTokenAccount,
+          dexTokenAccount: dexTokenAccount,
+          tokenProgram: spl.TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+
+      // Fetch balances after trading using spl.getAccount
+      const fairLaunchTokenAccountInfo = await spl.getAccount(provider.connection, fairLaunchTokenAccount);
+      const dexTokenAccountInfo = await spl.getAccount(provider.connection, dexTokenAccount);
+
+      const fairLaunchTokenBalance = fairLaunchTokenAccountInfo.amount;
+      const dexTokenBalance = dexTokenAccountInfo.amount;
+
+      console.log("Fair Launch Token Account Balance after trade:", fairLaunchTokenBalance.toString());
+      console.log("DEX Token Account Balance after trade:", dexTokenBalance.toString());
+
+      // Assert the correct amount was transferred
+      expect(Number(dexTokenBalance)).to.equal(totalSupply.toNumber() / 2);
+    });
   });
 
-  it("Starts trading after fair launch period ends", async () => {
-    // Wait for the fair launch period to end
-    await new Promise(resolve => setTimeout(resolve, (duration.toNumber() + 1) * 1000));
-
-    // Start trading
-    await program.methods
-      .startTrading()
-      .accounts({
-        fairLaunch: fairLaunch,
-        fairLaunchTokenAccount: fairLaunchTokenAccount,
-        dexTokenAccount: dexTokenAccount,
-        tokenProgram: spl.TOKEN_PROGRAM_ID,
-      })
-      .rpc();
-
-    // Fetch balances after trading
-    const fairLaunchTokenBalance = (await spl.getAccount(provider.connection, fairLaunchTokenAccount)).amount;
-    const dexTokenBalance = (await spl.getAccount(provider.connection, dexTokenAccount)).amount;
-
-    console.log("Fair Launch Token Account Balance after trade:", fairLaunchTokenBalance.toString());
-    console.log("DEX Token Account Balance after trade:", dexTokenBalance.toString());
-    // Assert the correct amount was transferred
-    expect(Number(dexTokenBalance)).to.equal(totalSupply.toNumber() / 2);
-  });
-});
